@@ -12,7 +12,7 @@ from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-
+from core.llm_engine import LLMEngine
 from core.analyzer import AttackSurfaceAnalyzer
 from core.swagger_discovery import SwaggerDiscovery
 from core.swagger_parser import SwaggerParser
@@ -21,26 +21,21 @@ console = Console()
 
 
 def run_discovery(target: str) -> str | None:
-    """Discover likely Swagger/OpenAPI URLs and return the first hit.
-
-    Returning the first candidate keeps the scan flow fast for interactive use.
-    If multiple docs exist, users can rerun `analyze` manually with a chosen URL.
-    """
+    """Discover likely Swagger/OpenAPI URL and return it."""
     console.print("\n[bold yellow][*] Starting Swagger discovery...[/bold yellow]\n")
 
     discovery = SwaggerDiscovery(target)
-    found_urls = discovery.discover()
+    swagger_url = discovery.discover()
 
-    if not found_urls:
+    if not swagger_url:
         console.print("[bold red][!] No Swagger documentation found.[/bold red]")
         return None
 
-    console.print(f"\n[bold green][+] Using Swagger: {found_urls[0]}[/bold green]\n")
-    return found_urls[0]
+    console.print(f"\n[bold green][+] Using Swagger: {swagger_url}[/bold green]\n")
+    return swagger_url
 
 
 def run_analysis(swagger_url: str) -> None:
-    """Fetch a Swagger document, extract endpoints, and print risk findings."""
     console.print(f"\n[bold cyan][*] Fetching Swagger from:[/bold cyan] {swagger_url}\n")
 
     parser = SwaggerParser(swagger_url)
@@ -55,8 +50,7 @@ def run_analysis(swagger_url: str) -> None:
         console.print("[bold red][!] No endpoints found.[/bold red]")
         return
 
-    # Show the raw attack surface before applying heuristics so analysts can
-    # verify that the parser interpreted the specification correctly.
+    # Show extracted endpoints
     table = Table(title="Extracted Endpoints", box=box.MINIMAL_DOUBLE_HEAD)
     table.add_column("Method", style="bold magenta")
     table.add_column("Path", style="cyan")
@@ -66,30 +60,58 @@ def run_analysis(swagger_url: str) -> None:
 
     console.print(table)
 
+    # Heuristic Analyzer
     analyzer = AttackSurfaceAnalyzer(endpoints)
-    findings = analyzer.analyze()
+    enriched_endpoints = analyzer.analyze()
 
-    if not findings:
-        console.print("\n[bold green][+] No obvious attack vectors detected.[/bold green]\n")
+    if not enriched_endpoints:
+        console.print("\n[bold green][+] No obvious structural risk signals detected.[/bold green]\n")
         return
 
-    # Findings are intentionally flattened into one row per endpoint to keep
-    # triage fast during reconnaissance and bug-hunting workflows.
-    findings_table = Table(title="Potential Attack Vectors", box=box.MINIMAL_DOUBLE_HEAD)
-    findings_table.add_column("Severity", style="bold")
+    # Show heuristic signals
+    findings_table = Table(title="Heuristic Risk Signals", box=box.MINIMAL_DOUBLE_HEAD)
     findings_table.add_column("Method", style="magenta")
     findings_table.add_column("Path", style="cyan")
-    findings_table.add_column("Risk", style="yellow")
+    findings_table.add_column("Signals", style="yellow")
 
-    for finding in findings:
+    for endpoint in enriched_endpoints:
         findings_table.add_row(
-            finding["severity"],
-            finding["method"],
-            finding["path"],
-            " | ".join(finding["risks"]),
+            endpoint["method"],
+            endpoint["path"],
+            " | ".join(endpoint.get("risk_signals", [])),
         )
 
     console.print(findings_table)
+
+    # -------- LLM Phase 1 --------
+
+    console.print("\n[bold cyan]Running LLM Endpoint Analysis...[/bold cyan]\n")
+
+    llm = LLMEngine()
+    endpoint_results = []
+
+    for endpoint in enriched_endpoints:
+        result = llm.analyze_endpoint(endpoint)
+        endpoint_results.append({
+            "endpoint": endpoint,
+            "analysis": result
+        })
+
+    # Print endpoint-level LLM results
+    for item in endpoint_results:
+        console.print("\n[bold magenta]Endpoint:[/bold magenta]")
+        console.print(item["endpoint"])
+        console.print("[bold yellow]LLM Analysis:[/bold yellow]")
+        console.print(item["analysis"])
+
+    # -------- LLM Phase 2 --------
+
+    console.print("\n[bold cyan]Running Global API Analysis...[/bold cyan]\n")
+
+    global_result = llm.analyze_global(enriched_endpoints)
+
+    console.print("\n[bold green]Global Risk Assessment:[/bold green]\n")
+    console.print(global_result)
 
 
 def interactive_menu() -> None:

@@ -1,100 +1,142 @@
-# AI API Attack Surface Analyzer
+# API Attack Surface Analyzer
 
-A lightweight security reconnaissance tool that discovers Swagger/OpenAPI specs,
-extracts API endpoints, and flags high-signal attack-surface risks.
+Static API reconnaissance tool for OpenAPI/Swagger specifications.
 
-## What this project does
+It discovers API specification endpoints, extracts method/path metadata, applies deterministic risk heuristics, and can optionally call an LLM (via OpenRouter) for structured hypothesis generation and systemic risk review.
 
-This project helps security engineers and bug hunters quickly answer:
-- What endpoints are exposed?
-- Which endpoints look privileged or state-changing?
-- Which paths likely carry object/user identifiers that may require strict authorization checks?
+This project is designed for triage and review acceleration, not automated exploitation.
 
-It is designed as an explainable, heuristic-first scanner. Findings are indicators,
-not proof of vulnerability.
+## Scope
+
+This repository currently targets:
+
+- Discovery of exposed Swagger/OpenAPI JSON documents.
+- Extraction of endpoints (`method`, `path`) from specification `paths`.
+- Heuristic identification of high-interest routes (for example: object identifiers and state-changing operations).
+- Optional LLM-assisted analysis that outputs structured security hypotheses.
+
+Out of scope:
+
+- Source-code analysis.
+- Runtime exploit validation.
+- Authentication bypass testing.
+- Fuzzing or payload generation.
 
 ## Architecture
 
-The workflow is split into small modules so each stage can be audited and extended:
+Pipeline:
 
-- `main.py`
-- CLI + interactive menu entrypoint.
-- Orchestrates discovery -> parsing -> analysis.
-- Renders endpoint and findings tables with `rich`.
+1. Discovery
+2. Parsing
+3. Heuristics
+4. Optional LLM reasoning
+5. Reporting
 
-- `core/swagger_discovery.py`
-- Probes a target base URL across a curated list of common Swagger/OpenAPI paths.
-- Keeps only candidates that return HTTP 200 and JSON content types.
+Module layout:
 
-- `core/swagger_parser.py`
-- Fetches and parses Swagger/OpenAPI JSON.
-- Normalizes data into `[{"method": "GET", "path": "/users/{id}"}, ...]`.
+- `main.py`: CLI entrypoint and workflow orchestration.
+- `core/swagger_discovery.py`: probes common OpenAPI/Swagger documentation paths.
+- `core/swagger_parser.py`: fetches/parses JSON specs and normalizes endpoint metadata.
+- `core/analyzer.py`: rule-based endpoint risk signal detection.
+- `core/reporter.py`: reporting/output layer boundary.
 
-- `core/analyzer.py`
-- Applies explainable heuristic rules to each endpoint.
-- Produces findings with `severity` and `risks`.
+### Flow Details
 
-- `core/reporter.py`
-- Placeholder module reserved for future export/report integrations.
+1. Discovery checks a curated list such as `/openapi.json`, `/swagger.json`, `/v3/api-docs`.
+2. Parser loads JSON and extracts endpoint objects from `paths`.
+3. Heuristic analyzer tags routes with deterministic rules (for example: identifier-bearing paths, privileged-looking paths, state-changing methods).
+4. If enabled, an LLM receives bounded structured endpoint context and returns:
+   - Endpoint-level vulnerability hypotheses.
+   - Global/systemic risk observations.
+5. Reporter prints structured findings for manual review.
 
-## Security heuristics implemented
+## Threat Model
 
-Current analysis rules flag endpoints when they include:
+The analyzer assumes a realistic SaaS/API security review context:
 
-- Identifier-like dynamic parameters
-- Example: `/users/{userId}`, `/accounts/{account_id}`
-- Rationale: common BOLA/IDOR exposure points.
+- Attacker has network access to published API routes.
+- Attacker can authenticate as a low-privilege user (typical B2B/B2C threat model).
+- Risk is concentrated in authorization and business-logic gaps, especially:
+  - BOLA/IDOR on object-referencing endpoints.
+  - Privilege boundary mistakes on admin or state-changing operations.
+  - Unsafe update patterns (for example mass-assignment style behavior inferred from endpoint semantics).
 
-- State-changing HTTP methods
-- `DELETE`, `PUT`, `PATCH`
-- Rationale: higher impact if authorization is weak.
+This is a structural risk triage model based on API contract metadata, not proof of vulnerability.
 
-- Administrative routes
-- Any path containing `admin`
-- Rationale: often maps to privileged operations.
+## LLM Integration (Constrained and Structured)
 
-All of these conditions currently map to `HIGH` severity to maximize triage visibility.
+LLM usage is optional and intentionally bounded:
 
-## How to run
+- Input is structured endpoint metadata (not source code, not internal secrets).
+- Prompts require JSON-structured output with explicit fields.
+- LLM output is treated as hypothesis generation, not ground truth.
+- Deterministic heuristics remain the primary baseline.
+- Final interpretation is human-led and should be validated through manual security testing.
 
-### 1) Install dependencies
+## Usage
+
+Install dependencies:
 
 ```bash
-pip install requests rich
+pip install -r requirements.txt
 ```
 
-Optional: also record dependencies in `requirements.txt`.
+Discovery only:
 
-### 2) Interactive mode
+```bash
+python main.py discover https://api.target.com
+```
+
+Analyze known OpenAPI/Swagger URL:
+
+```bash
+python main.py analyze https://api.target.com/openapi.json
+```
+
+Full scan (discover + analyze):
+
+```bash
+python main.py scan https://api.target.com
+```
+
+Interactive mode:
 
 ```bash
 python main.py
 ```
 
-### 3) CLI mode
+## Example Output
 
-```bash
-python main.py discover https://api.target.com
-python main.py analyze https://api.target.com/openapi.json
-python main.py scan https://api.target.com
+```text
+Extracted Endpoints
++--------+-----------------------+
+| Method | Path                  |
++--------+-----------------------+
+| GET    | /users/{userId}       |
+| PATCH  | /users/{userId}       |
+| DELETE | /admin/accounts/{id}  |
++--------+-----------------------+
+
+Potential Attack Vectors
++----------+--------+----------------------+---------------------------------------------+
+| Severity | Method | Path                 | Risk                                        |
++----------+--------+----------------------+---------------------------------------------+
+| HIGH     | PATCH  | /users/{userId}      | Sensitive identifier in path: userId        |
+| HIGH     | PATCH  | /users/{userId}      | State-changing method (authorization check) |
+| HIGH     | DELETE | /admin/accounts/{id} | Administrative endpoint detected            |
++----------+--------+----------------------+---------------------------------------------+
 ```
 
-## Example flow
+## Limitations
 
-1. Discovery checks common doc paths like `/openapi.json` and `/v3/api-docs`.
-2. Parser extracts endpoint paths and methods from the `paths` object.
-3. Analyzer tags high-interest routes for manual testing.
-4. Console output shows both raw attack surface and risk hypotheses.
+- Heuristic and metadata-driven: can produce false positives and false negatives.
+- JSON OpenAPI/Swagger documents are primary input; non-JSON docs may be skipped.
+- No runtime behavior validation (authorization checks, tenant boundaries, token handling, or rate-limit enforcement are not directly verified).
+- LLM analysis quality depends on model behavior and prompt compliance.
+- Findings are prioritization signals intended to guide manual testing.
 
-## Scope and limitations
+## Engineering Notes
 
-- Heuristic-based: no authentication bypass testing is performed.
-- No request fuzzing, schema-aware payload generation, or active exploitation.
-- JSON specs only (non-JSON docs are ignored by design).
-
-## Suggested next extensions
-
-- Parse request/response schemas for mass-assignment hints.
-- Detect tenant boundaries and possible cross-tenant object references.
-- Add confidence scoring and false-positive suppression.
-- Export findings to JSON/Markdown/SARIF.
+- Deterministic rules are explainable and auditable.
+- Module boundaries are explicit to keep discovery/parsing/analysis separable.
+- This project is appropriate as a backend/AppSec portfolio artifact when paired with tests and reproducible sample inputs.

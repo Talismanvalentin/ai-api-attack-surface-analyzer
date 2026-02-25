@@ -1,12 +1,13 @@
-"""Swagger/OpenAPI endpoint discovery utilities.
+"""
+Swagger/OpenAPI discovery engine.
 
-Discovery is intentionally lightweight and path-based: it probes a curated list
-of common documentation endpoints and records responses that appear to be JSON.
+Attempts to locate Swagger/OpenAPI documentation across common paths.
 """
 
 import requests
+from urllib.parse import urljoin
 
-# Common paths observed across Swagger 2.0 and OpenAPI 3 deployments.
+
 COMMON_SWAGGER_PATHS = [
     "/swagger.json",
     "/v2/swagger.json",
@@ -17,38 +18,55 @@ COMMON_SWAGGER_PATHS = [
     "/docs",
     "/api/docs",
     "/.well-known/openapi.json",
+    "/api/swagger.json",
+    "/api/openapi.json",
+    "/v1/swagger.json",
+    "/api/v1/swagger.json",
+    "/api/",
 ]
 
 
 class SwaggerDiscovery:
-    """Probe a base URL for likely API documentation endpoints."""
-
     def __init__(self, base_url: str):
-        # Normalize trailing slash once so path concatenation stays consistent.
-        self.base_url = base_url.rstrip("/")
+        # Normalize base URL once
+        self.base_url = base_url.rstrip("/") + "/"
 
-    def discover(self) -> list[str]:
-        """Return every documentation URL that responds as JSON."""
+    def discover(self) -> str | None:
+        """
+        Try common Swagger paths and return first valid JSON spec URL.
+        """
+
         print("\n[+] Starting Swagger discovery...\n")
 
-        found: list[str] = []
-
         for path in COMMON_SWAGGER_PATHS:
-            url = self.base_url + path
+            full_url = urljoin(self.base_url, path.lstrip("/"))
 
             try:
-                response = requests.get(url, timeout=5)
+                response = requests.get(
+                    full_url,
+                    timeout=5,
+                    verify=False  # Required for HTB self-signed certs
+                )
 
-                # `Content-Type` check avoids treating HTML docs/error pages as
-                # machine-readable specs, which reduces noisy downstream parsing.
-                if response.status_code == 200 and "json" in response.headers.get("Content-Type", ""):
-                    print(f"[+] Found potential Swagger: {url}")
-                    found.append(url)
-                else:
-                    print(f"[-] {url} -> {response.status_code}")
+                if response.status_code == 200:
+                    # Check if it looks like a Swagger/OpenAPI spec
+                    content_type = response.headers.get("Content-Type", "")
+                    if "json" in content_type.lower():
+                        try:
+                            data = response.json()
+
+                            # Minimal validation: must contain "paths"
+                            if "paths" in data:
+                                print(f"[+] Found Swagger at: {full_url}")
+                                return full_url
+
+                        except ValueError:
+                            continue
+
+                print(f"[!] Tested: {full_url} (not valid Swagger)")
 
             except requests.RequestException:
-                # Keep scanning on transient network/TLS/connection failures.
-                print(f"[!] Error testing {url}")
+                print(f"[!] Error testing {full_url}")
 
-        return found
+        print("[!] No Swagger documentation found.")
+        return None
